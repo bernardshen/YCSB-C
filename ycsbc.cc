@@ -11,6 +11,7 @@
 #include <iostream>
 #include <vector>
 #include <future>
+#include <time.h>
 #include "core/utils.h"
 #include "core/timer.h"
 #include "core/client.h"
@@ -40,6 +41,29 @@ int DelegateClient(ycsbc::DB *db, ycsbc::CoreWorkload *wl, const int num_ops,
   return oks;
 }
 
+int DelegateClient_lat(ycsbc::DB *db, ycsbc::CoreWorkload *wl, const int num_ops,
+    bool is_loading, double * avg_lat) {
+  db->Init();
+  ycsbc::Client client(*db, *wl);
+  int oks = 0;
+  timespec t0, t1;
+  uint64_t lat;
+  for (int i = 0; i < num_ops; ++i) {
+    if (is_loading) {
+      oks += client.DoInsert();
+    } else {
+      clock_gettime(CLOCK_REALTIME, &t0);
+      oks += client.DoTransaction();
+      clock_gettime(CLOCK_REALTIME, &t1);
+      uint64_t tmp = (t1.tv_sec - t0.tv_sec) * 1000000000 + t1.tv_nsec - t0.tv_nsec;
+      lat += tmp;
+    }
+  }
+  *avg_lat = (double)lat / num_ops;
+  db->Close();
+  return oks;
+}
+
 int main(const int argc, const char *argv[]) {
   utils::Properties props;
   string file_name = ParseCommandLine(argc, argv, props);
@@ -62,17 +86,31 @@ int main(const int argc, const char *argv[]) {
       dbList[i] = ycsbc::DBFactory::CreateDB(props);
     }
   }
+  double * avg_lat = NULL;
+  if (props["measure"] == "latency") {
+    avg_lat = (double*)malloc(sizeof(double) * num_threads);
+  }
 
   // Loads data
   vector<future<int>> actual_ops;
   int total_ops = stoi(props[ycsbc::CoreWorkload::RECORD_COUNT_PROPERTY]);
   for (int i = 0; i < num_threads; ++i) {
     if (props["dbname"] == "myKV" || props["dbname"] == "redis") {
-      actual_ops.emplace_back(async(launch::async,
-        DelegateClient, dbList[i], &wl, total_ops / num_threads, true));
+      if (props["measure"] == "latency") {
+        actual_ops.emplace_back(async(launch::async, 
+          DelegateClient_lat, dbList[i], &wl, total_ops / num_threads, true, &avg_lat[i]));
+      } else {
+        actual_ops.emplace_back(async(launch::async,
+          DelegateClient, dbList[i], &wl, total_ops / num_threads, true));
+      }
     } else {
-      actual_ops.emplace_back(async(launch::async,
-        DelegateClient, db, &wl, total_ops / num_threads, true));
+      if (props["measure"] == "latency") {
+        actual_ops.emplace_back(async(launch::async, 
+          DelegateClient_lat, db, &wl, total_ops / num_threads, true, &avg_lat[i]));
+      } else {
+        actual_ops.emplace_back(async(launch::async,
+          DelegateClient, db, &wl, total_ops / num_threads, true));
+      }
     }
   }
   assert((int)actual_ops.size() == num_threads);
@@ -91,11 +129,21 @@ int main(const int argc, const char *argv[]) {
   timer.Start();
   for (int i = 0; i < num_threads; ++i) {
     if (props["dbname"] == "myKV" || props["dbname"] == "redis") {
-      actual_ops.emplace_back(async(launch::async,
-        DelegateClient, dbList[i], &wl, total_ops / num_threads, false));
+      if (props["measure"] == "latency") {
+        actual_ops.emplace_back(async(launch::async, 
+          DelegateClient_lat, dbList[i], &wl, total_ops / num_threads, false, &avg_lat[i]));
+      } else {
+        actual_ops.emplace_back(async(launch::async,
+          DelegateClient, dbList[i], &wl, total_ops / num_threads, false));
+      }
     } else {
-      actual_ops.emplace_back(async(launch::async,
-        DelegateClient, db, &wl, total_ops / num_threads, false));
+      if (props["measure"] == "latency") {
+        actual_ops.emplace_back(async(launch::async, 
+          DelegateClient_lat, db, &wl, total_ops / num_threads, false, &avg_lat[i]));
+      } else {
+        actual_ops.emplace_back(async(launch::async,
+          DelegateClient, db, &wl, total_ops / num_threads, false));
+      }
     }
   }
   assert((int)actual_ops.size() == num_threads);
@@ -105,10 +153,20 @@ int main(const int argc, const char *argv[]) {
     assert(n.valid());
     sum += n.get();
   }
+  double lat = 0;
+  if (props["measure"] == "latency") {
+    for (int i = 0; i < num_threads; i++) {
+      lat += avg_lat[i];
+    }
+    lat = lat / num_threads;
+  }
+
   double duration = timer.End();
   cerr << "# Transaction throughput (KTPS)" << endl;
   cerr << props["dbname"] << '\t' << file_name << '\t' << num_threads << '\t';
   cerr << total_ops / duration / 1000 << endl;
+  cerr << "# Transaction latency (ns)" << endl;
+  cerr << lat << endl;
 }
 
 string ParseCommandLine(int argc, const char *argv[], utils::Properties &props) {
@@ -163,6 +221,9 @@ string ParseCommandLine(int argc, const char *argv[], utils::Properties &props) 
       }
       props.SetProperty("table", argv[argindex]);
       argindex ++;
+    } else if (strcmp(argv[argindex], "-lat") == 0) {
+      props.SetProperty("measure", "latency");
+      argindex++;
     } else if (strcmp(argv[argindex], "-P") == 0) {
       argindex++;
       if (argindex >= argc) {
@@ -189,7 +250,9 @@ string ParseCommandLine(int argc, const char *argv[], utils::Properties &props) 
     UsageMessage(argv[0]);
     exit(0);
   }
-
+  if (props.GetProperty("measure", "aaa") == "aaa") {
+    props.SetProperty("measure", "throughput");
+  }
   return filename;
 }
 
@@ -200,6 +263,8 @@ void UsageMessage(const char *command) {
   cout << "  -db dbname: specify the name of the DB to use (default: basic)" << endl;
   cout << "  -P propertyfile: load properties from the given file. Multiple files can" << endl;
   cout << "                   be specified, and will be processed in the order specified" << endl;
+  cout << "  -table TableType: specify the table type used by MyKV, can be SIMPLE, CUCKOO, and HOPSCOTCH" << endl;
+  cout << "  -lat: measure the latency instead of throughput" << endl;
 }
 
 inline bool StrStartWith(const char *str, const char *pre) {
