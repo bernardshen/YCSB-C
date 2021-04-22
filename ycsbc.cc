@@ -16,6 +16,7 @@
 #include "core/client.h"
 #include "core/core_workload.h"
 #include "db/db_factory.h"
+#include "db/myKV_db.h"
 
 using namespace std;
 
@@ -44,6 +45,7 @@ int main(const int argc, const char *argv[]) {
   string file_name = ParseCommandLine(argc, argv, props);
 
   ycsbc::DB *db = ycsbc::DBFactory::CreateDB(props);
+  ycsbc::DB **dbList = NULL;  // sjc added
   if (!db) {
     cout << "Unknown database name " << props["dbname"] << endl;
     exit(0);
@@ -53,13 +55,25 @@ int main(const int argc, const char *argv[]) {
   wl.Init(props);
 
   const int num_threads = stoi(props.GetProperty("threadcount", "1"));
+  if (props["dbname"] == "myKV" || props["dbname"] == "redis") {
+    dbList = (ycsbc::DB **)malloc(sizeof(ycsbc::DB *) * num_threads);
+    dbList[0] = db;
+    for (int i = 1; i < num_threads; i++) {
+      dbList[i] = ycsbc::DBFactory::CreateDB(props);
+    }
+  }
 
   // Loads data
   vector<future<int>> actual_ops;
   int total_ops = stoi(props[ycsbc::CoreWorkload::RECORD_COUNT_PROPERTY]);
   for (int i = 0; i < num_threads; ++i) {
-    actual_ops.emplace_back(async(launch::async,
+    if (props["dbname"] == "myKV" || props["dbname"] == "redis") {
+      actual_ops.emplace_back(async(launch::async,
+        DelegateClient, dbList[i], &wl, total_ops / num_threads, true));
+    } else {
+      actual_ops.emplace_back(async(launch::async,
         DelegateClient, db, &wl, total_ops / num_threads, true));
+    }
   }
   assert((int)actual_ops.size() == num_threads);
 
@@ -76,8 +90,13 @@ int main(const int argc, const char *argv[]) {
   utils::Timer<double> timer;
   timer.Start();
   for (int i = 0; i < num_threads; ++i) {
-    actual_ops.emplace_back(async(launch::async,
+    if (props["dbname"] == "myKV" || props["dbname"] == "redis") {
+      actual_ops.emplace_back(async(launch::async,
+        DelegateClient, dbList[i], &wl, total_ops / num_threads, false));
+    } else {
+      actual_ops.emplace_back(async(launch::async,
         DelegateClient, db, &wl, total_ops / num_threads, false));
+    }
   }
   assert((int)actual_ops.size() == num_threads);
 
@@ -136,6 +155,14 @@ string ParseCommandLine(int argc, const char *argv[], utils::Properties &props) 
       }
       props.SetProperty("slaves", argv[argindex]);
       argindex++;
+    } else if (strcmp(argv[argindex], "-table") == 0) {
+      argindex ++;
+      if (argindex >= argc) {
+        UsageMessage(argv[0]);
+        exit(0);
+      }
+      props.SetProperty("table", argv[argindex]);
+      argindex ++;
     } else if (strcmp(argv[argindex], "-P") == 0) {
       argindex++;
       if (argindex >= argc) {
