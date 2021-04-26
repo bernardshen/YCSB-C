@@ -21,6 +21,20 @@ def parseFile(fname):
     assert(len(retList) == 5)
     return retList
 
+def parseLatFile(fname):
+    f = open(fname, 'r')
+    lines = f.readlines()
+    retList = []
+    for l in lines:
+        if l[0] == '#':
+            continue
+        if l[0].isalpha():
+            continue
+        lat = float(l[:-1])
+        retList.append(lat)
+    assert(len(retList) == 5)
+    return retList
+
 # threadNumList = [1,2,3,4,5,6,7,8,9,10,15,20,25,30,35,40,45,50]
 threadNumList = [1,2,3,4,5,6,7,8,9,10]
 workloadNames = ['A', 'B', 'C', 'D', 'E']
@@ -37,8 +51,8 @@ if __name__ == "__main__":
     fnamePre = genFnamePre(db, comm, table)
     tputList = []
     for i in threadNumList:
-        fname = fnamePre + "_t{}.output".format(i)
-        tmpList = parseFile(fname)
+        fname = fnamePre + "_t{}_lat.output".format(i)
+        tmpList = parseLatFile(fname)
         tputList.append(tmpList)
     
     tmpDict = {}
@@ -47,5 +61,5 @@ if __name__ == "__main__":
             'tput': [l[i] for l in tputList],
             'tnum': threadNumList,
         }
-    with open('parsed/' + fnamePre + '.json', 'w') as f:
+    with open('parsed/' + fnamePre + '_lat.json', 'w') as f:
         json.dump(tmpDict, f, indent=2)

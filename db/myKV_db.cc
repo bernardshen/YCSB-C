@@ -33,8 +33,8 @@ inline int MyKVDB::Read(const string &table, const string &key, const vector<str
     int ret = -1;
     int64_t value;
     size_t vlen;
-    ret = RPCClientKVGet1S(&client, ckey, key_index.length(), &value, &vlen);
-    // ret = RPCClientKVGet2S(&client, ckey, key_index.length(), &value, &vlen);
+    // ret = RPCClientKVGet1S(&client, ckey, key_index.length(), &value, &vlen);
+    ret = RPCClientKVGet2S(&client, ckey, key_index.length(), &value, &vlen);
     if (ret < 0) {
         printf("RPCClientKVGet1S failed\n");
         return DB::kErrorNoData;
